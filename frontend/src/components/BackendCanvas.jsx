@@ -1,0 +1,512 @@
+import React, { useEffect, useRef, useState } from "react";
+import { Canvas, Rect, Circle, Triangle, Line, Textbox, PencilBrush, ActiveSelection } from "fabric";
+import { CiPen, CiText } from "react-icons/ci";
+import { FaCircle, FaShapes, FaSquare, FaHandPaper, FaDownload, FaTrash, FaSave, FaBars, FaTimes } from "react-icons/fa";
+import { IoTriangle } from "react-icons/io5";
+import { PiLineSegmentFill } from "react-icons/pi";
+import { SketchPicker } from "react-color";
+import axios from "axios";
+
+import { motion } from "framer-motion";
+import { useNavigate, useParams } from "react-router-dom";
+import { useAuth, useUser } from "@clerk/clerk-react";
+import SaveCanvas from "./SaveCanvas.jsx";
+import CanvasSidebar from "./CanvasSidebar.jsx";
+import ShapeMenu from "./ShapeMenu.jsx";
+
+const Backendcanvas = ({ save, setSave }) => {
+  const { isSignedIn } = useAuth();
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    if (!isSignedIn) {
+      navigate("/");
+    }
+  }, [isSignedIn, navigate]);
+
+  const canvasRef = useRef(null);
+  const boxRef = useRef(null);
+  const miniMapRef = useRef(null); // <-- ensure this is initialized
+  const [activeTool, setActiveTool] = useState(null);
+  const [selectedColor, setSelectedColor] = useState("#ff0000");
+  const [selectedShape, setSelectedShape] = useState(null);
+  const [isMoving, setIsMoving] = useState(false);
+  const [showDeleteButton, setShowDeleteButton] = useState(false);
+  const projectId = useParams().id;
+   const defaultColor = "#ffffff";
+      const [zoomLevel, setZoomLevel] = useState(1);
+  const { user } = useUser();
+  const { getToken } = useAuth();
+const updateMiniMap = () => {
+  const canvas = canvasRef.current;
+  const miniCanvas = miniMapRef.current;
+  if (!canvas || !miniCanvas) return;
+
+  const miniCtx = miniCanvas.getContext("2d");
+  const scale = 0.15;
+
+  // Wait briefly after render to get accurate dataURL
+  setTimeout(() => {
+    const dataURL = canvas.toDataURL({
+      format: "png",
+      quality: 0.5,
+      multiplier: scale,
+    });
+
+    const img = new Image();
+    img.onload = () => {
+      miniCanvas.width = canvas.width * scale;
+      miniCanvas.height = canvas.height * scale;
+      miniCtx.clearRect(0, 0, miniCanvas.width, miniCanvas.height);
+      miniCtx.drawImage(img, 0, 0);
+    };
+    img.src = dataURL;
+  }, 100); // wait for render to complete
+};
+
+  const loadCanvasData = (canvasData) => {
+    if (canvasRef.current) {
+      canvasRef.current.dispose();
+      canvasRef.current = null;
+    }
+
+    const box = boxRef.current;
+        const canvasWidth = box.clientWidth;
+        const canvasHeight = box.clientHeight;
+
+        const canvas = new Canvas("my-canvas", {
+            width: canvasWidth,
+            height: canvasHeight,
+            backgroundColor: "rgb(26, 26, 26)",
+            isDrawingMode: false,
+            preserveObjectStacking: true,
+            selection: true,
+        });
+
+
+    
+    canvasRef.current = canvas;
+
+
+    canvas.loadFromJSON(canvasData, () => {
+      canvas.requestRenderAll();
+       updateMiniMap();
+    });
+     canvas.on("mouse:wheel", function (opt) {
+            const delta = opt.e.deltaY;
+            let zoom = canvas.getZoom();
+            zoom *= 0.999 ** delta;
+            zoom = Math.min(Math.max(zoom, 0.2), 5);
+            const point = new fabric.Point(opt.e.offsetX, opt.e.offsetY);
+            canvas.zoomToPoint(point, zoom);
+            setZoomLevel(zoom);
+            opt.e.preventDefault();
+            opt.e.stopPropagation();
+            updateMiniMap();
+        });
+
+        let isDragging = false;
+        let lastPosX, lastPosY;
+
+        canvas.on("mouse:down", function (opt) {
+            if (opt.e.ctrlKey === true) {
+                isDragging = true;
+                canvas.selection = false;
+                lastPosX = opt.e.clientX;
+                lastPosY = opt.e.clientY;
+            }
+        });
+
+        canvas.on("mouse:move", function (opt) {
+            if (isDragging) {
+                const e = opt.e;
+                const vpt = canvas.viewportTransform;
+                vpt[4] += e.clientX - lastPosX;
+                vpt[5] += e.clientY - lastPosY;
+                canvas.requestRenderAll();
+                lastPosX = e.clientX;
+                lastPosY = e.clientY;
+                updateMiniMap();
+            }
+        });
+
+        canvas.on("mouse:up", function () {
+            isDragging = false;
+            canvas.selection = true;
+        });
+
+        canvas.on("mouse:down", (options) => {
+            // If in drawing mode, don't interfere with drawing
+            if (canvas.isDrawingMode) {
+                return;
+            }
+
+            if (options.target) {
+                const activeObject = canvas.getActiveObject();
+
+                if (options.e.shiftKey) {
+                    if (activeObject) {
+                        if (activeObject.type === "activeSelection") {
+                            activeObject.addWithUpdate(options.target);
+                        } else {
+                            const sel = new ActiveSelection(
+                                [activeObject, options.target],
+                                { canvas }
+                            );
+                            canvas.setActiveObject(sel);
+                        }
+                    } else {
+                        canvas.setActiveObject(options.target);
+                    }
+                } else {
+                    canvas.setActiveObject(options.target);
+                }
+
+                setSelectedShape(canvas.getActiveObject());
+                setShowDeleteButton(true);
+            } else {
+                canvas.discardActiveObject();
+                setSelectedShape(null);
+                setShowDeleteButton(false);
+            }
+
+            canvas.requestRenderAll();
+            updateMiniMap();
+        });
+
+        canvas.on("selection:cleared", () => {
+            setSelectedShape(null);
+            setShowDeleteButton(false);
+        });
+
+        canvas.on("selection:created", (e) => {
+            setSelectedShape(e.target);
+            setShowDeleteButton(true);
+        });
+
+        canvas.on("selection:updated", (e) => {
+            setSelectedShape(e.target);
+            setShowDeleteButton(true);
+        });
+
+        canvas.on("mouse:dblclick", (e) => {
+            if (!e.target) {
+                setSelectedShape("canvas");
+                setShowDeleteButton(false);
+            }
+        });
+
+        canvas.on("object:modified", () => {
+            canvas.renderAll();
+            updateMiniMap();
+        });
+
+        // Add event listener for when drawing paths are completed
+        canvas.on("path:created", (e) => {
+            const path = e.path;
+            path.set({
+                stroke: "#ffffff", // Ensure drawn paths are white
+                strokeWidth: 3,
+            });
+            canvas.renderAll();
+            updateMiniMap();
+        });
+
+        const handleKeyDown = (e) => {
+            if ((e.key === "Delete" || e.key === "Backspace") && selectedShape) {
+                deleteSelectedObject();
+            }
+            if (e.key === "r") {
+                resetZoom();
+            }
+            if (e.key === "Escape" && canvas.isDrawingMode) {
+                exitDrawingMode();
+            }
+        };
+
+        const handleResize = () => {
+            if (canvasRef.current && boxRef.current) {
+                const canvas = canvasRef.current;
+                const newWidth = boxRef.current.clientWidth;
+                const newHeight = boxRef.current.clientHeight;
+                const scaleX = newWidth / canvas.getWidth();
+                const scaleY = newHeight / canvas.getHeight();
+                canvas.setDimensions({ width: newWidth, height: newHeight });
+
+                canvas.getObjects().forEach((obj) => {
+                    obj.scaleX *= scaleX;
+                    obj.scaleY *= scaleY;
+                    obj.left *= scaleX;
+                    obj.top *= scaleY;
+                    obj.setCoords();
+                });
+
+                canvas.renderAll();
+                updateMiniMap();
+            }
+        };
+
+        window.addEventListener("keydown", handleKeyDown);
+        window.addEventListener("resize", handleResize);
+
+        updateMiniMap();
+
+        return () => {
+            window.removeEventListener("keydown", handleKeyDown);
+            window.removeEventListener("resize", handleResize);
+            canvas.dispose();
+            canvasRef.current = null;
+        };
+  };
+
+  useEffect(() => {
+    const fetchCanvas = async () => {
+      if (!user || !projectId) return;
+      try {
+        const token = await getToken();
+        const res = await axios.get(
+          `http://localhost:5001/api/canvas/${user.id}/${projectId}`,
+          {
+            headers: { Authorization: `Bearer ${token}` },
+            withCredentials: true,
+          }
+        );
+        if (res.data.success && res.data.canvas.canvasData) {
+          const parsed = JSON.parse(res.data.canvas.canvasData);
+          loadCanvasData(parsed);
+        }
+      } catch (err) {
+        console.error("Error fetching canvas:", err);
+      }
+    };
+    fetchCanvas();
+  }, [user, projectId]);
+ const toggleMoveMode = () => {
+        const canvas = canvasRef.current;
+        setIsMoving(!isMoving);
+
+        if (!isMoving) {
+            canvas.isDrawingMode = false;
+            canvas.selection = false;
+            canvas.defaultCursor = "move";
+            canvas.hoverCursor = "move";
+            setActiveTool("move");
+        } else {
+            canvas.selection = true;
+            canvas.defaultCursor = "default";
+            canvas.hoverCursor = "default";
+            setActiveTool(null);
+        }
+    };
+
+    const handlePenTool = () => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+
+        setActiveTool("pen");
+        canvas.isDrawingMode = true;
+        canvas.selection = false; // Disable selection while drawing
+        canvas.freeDrawingBrush = new PencilBrush(canvas);
+        canvas.freeDrawingBrush.color = "#ffffff"; // White color for black background
+        canvas.freeDrawingBrush.width = 3; // Slightly thicker for better visibility
+        
+        // Update cursor
+        canvas.defaultCursor = "crosshair";
+        canvas.hoverCursor = "crosshair";
+    };
+
+    const exitDrawingMode = () => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        
+        canvas.isDrawingMode = false;
+        canvas.selection = true;
+        canvas.defaultCursor = "default";
+        canvas.hoverCursor = "default";
+        setActiveTool(null);
+    };
+
+    const resetZoom = () => {
+        const canvas = canvasRef.current;
+        canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
+        canvas.setZoom(1);
+        setZoomLevel(1);
+        canvas.renderAll();
+        updateMiniMap();
+    };
+
+    const addRect = () => {
+        const canvas = canvasRef.current;
+        const rect = new Rect({
+            height: 150,
+            width: 200,
+            top: canvas.height * Math.random(),
+            left: canvas.width * Math.random(),
+            fill: defaultColor,
+        });
+        rect.on("mousedown", (e) => setSelectedShape(e.target));
+        canvas.add(rect);
+        updateMiniMap();
+    };
+
+    const addCircle = () => {
+        const canvas = canvasRef.current;
+        const circle = new Circle({
+            radius: 50,
+            fill: defaultColor,
+            top: canvas.height * Math.random(),
+            left: canvas.width * Math.random(),
+        });
+        circle.on("mousedown", (e) => setSelectedShape(e.target));
+        canvas.add(circle);
+        updateMiniMap();
+    };
+
+    const addTriangle = () => {
+        const canvas = canvasRef.current;
+        const triangle = new Triangle({
+            width: 100,
+            height: 100,
+            fill: defaultColor,
+            top: canvas.height * Math.random(),
+            left: canvas.width * Math.random(),
+        });
+        triangle.on("mousedown", (e) => setSelectedShape(e.target));
+        canvas.add(triangle);
+        updateMiniMap();
+    };
+
+    const addLine = () => {
+        const canvas = canvasRef.current;
+        const line = new Line([50, 50, 200, 200], {
+            stroke: "#ffffff", // White line for black background
+            strokeWidth: 3,
+            selectable: true,
+            evented: true,
+        });
+        line.on("mousedown", (e) => setSelectedShape(e.target));
+        canvas.add(line);
+        canvas.setActiveObject(line);
+        canvas.renderAll();
+        updateMiniMap();
+    };
+
+    const addText = () => {
+        const canvas = canvasRef.current;
+        const text = new Textbox("Type here", {
+            width: 200,
+            fontSize: 24,
+            fill: "#ffffff", // White text for black background
+            left: canvas.width / 2 - 100,
+            top: canvas.height / 2 - 50,
+            selectable: true,
+            hasControls: true,
+            hasBorders: true,
+            borderColor: "#ffffff",
+            cornerColor: "#ffffff",
+            cornerSize: 6,
+            transparentCorners: false,
+        });
+
+        text.on("mousedown", (e) => setSelectedShape(e.target));
+        text.on("mousedblclick", () => {
+            text.enterEditing();
+            text.selectAll();
+        });
+
+        canvas.add(text);
+        canvas.setActiveObject(text);
+        canvas.renderAll();
+        updateMiniMap();
+    };
+
+    const deleteSelectedObject = () => {
+        const canvas = canvasRef.current;
+        if (selectedShape && selectedShape !== "canvas") {
+            if (selectedShape.type === "activeSelection") {
+                selectedShape.getObjects().forEach((obj) => canvas.remove(obj));
+            } else {
+                canvas.remove(selectedShape);
+            }
+            canvas.discardActiveObject();
+            canvas.renderAll();
+            setSelectedShape(null);
+            setShowDeleteButton(false);
+            updateMiniMap();
+        }
+    };
+
+    const handleDownload = () => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        const dataURL = canvas.toDataURL({
+            format: "png",
+            quality: 1,
+        });
+        const link = document.createElement("a");
+        link.href = dataURL;
+        link.download = "canvas.png";
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    };
+
+  
+ return (
+        <div className="w-screen h-screen flex  bg-[rgb(26, 26, 26)] relative">
+            <CanvasSidebar
+                canvasRef={canvasRef}
+                selectedShape={selectedShape}
+                setSelectedShape={setSelectedShape}
+                setActiveTool={setActiveTool}
+                activeTool={activeTool}
+                isMoving={isMoving}
+                toggleMoveMode={toggleMoveMode}
+                handleDownload={handleDownload}
+                setSave={setSave}
+                deleteSelectedObject={deleteSelectedObject}
+                selectedColor={selectedColor}
+                setSelectedColor={setSelectedColor}
+                showDeleteButton={showDeleteButton}
+                addRect={addRect}
+                addCircle={addCircle}
+                addTriangle={addTriangle}
+                addLine={addLine}
+                addText={addText}
+                handlePenTool={handlePenTool}
+                exitDrawingMode={exitDrawingMode}
+            />
+
+            <div ref={boxRef} className="flex-1 relative bg-gray-800">
+                <motion.canvas
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    id="my-canvas"
+                    className="absolute top-0 left-0 w-full h-full"
+                />
+
+                {selectedShape && (
+                    <ShapeMenu
+                        canvasRef={canvasRef}
+                        selectedShape={selectedShape}
+                    />
+                )}
+
+                <canvas
+                    ref={miniMapRef}
+                    className="absolute z-30 bottom-4 right-4 w-40 h-40 border border-black  shadow-md rounded"
+                />
+
+                {save && (
+                    <SaveCanvas
+                        save={save}
+                        setSave={setSave}
+                        canvasData={canvasRef.current?.toJSON()}
+                    />
+                )}
+            </div>
+        </div>
+    );
+};
+
+export default Backendcanvas;
