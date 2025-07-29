@@ -1,10 +1,26 @@
-import mongoose from 'mongoose';
-const Schema = mongoose.Schema;
+const mongoose = require('mongoose');
+const { Schema } = mongoose;
 
-const canvasSchema = new Schema({
-  userId: { type: Schema.Types.ObjectId, ref: 'User' },
-  canvasData: { type: String, required: true },
-  name:{type:String,required:true}
-});
+const canvasSchema = new Schema(
+  {
+    userId: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+    },
+    name: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    canvasData: {
+      type: String,
+      required: true,
+    },
+  },
+  {
+    timestamps: true, // Adds createdAt and updatedAt fields
+  }
+);
 
-export default mongoose.model('Canvas', canvasSchema);
+module.exports = mongoose.model('Canvas', canvasSchema);
